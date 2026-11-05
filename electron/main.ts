@@ -1,8 +1,10 @@
-import { app, BrowserWindow, Tray, ipcMain, nativeImage, net, protocol, screen, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, Tray, ipcMain, nativeImage, net, protocol, screen, session, shell } from 'electron'
+import { spawn, spawnSync } from 'child_process'
+import { Readable } from 'stream'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
-import { registerBiliApiHandlers } from './biliApi'
+import { registerBiliApiHandlers, resolveDownloadDir, getDownloadDir, setDownloadDir } from './biliApi'
 import { registerLyricsApiHandlers } from './lyricsApi'
 import { initUpdates, getActiveRendererRoot } from './updater'
 import { registerWebdavHandlers } from './webdav'
@@ -10,6 +12,66 @@ import { registerWebdavHandlers } from './webdav'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const isHarmonyOS = (process.platform as string) === 'openharmony'
+
+// 可作为本地音频加载 / 扫描 / 删除的扩展名（mp4 按音轨播放，无画面）
+const AUDIO_EXT_RE = /\.(m4a|mp3|mp4|flac|ogg|opus|wav|aac|wma|aiff)$/i
+
+const AUDIO_MIME: Record<string, string> = {
+  '.m4a': 'audio/mp4',
+  '.mp4': 'audio/mp4',
+  '.mp3': 'audio/mpeg',
+  '.flac': 'audio/flac',
+  '.ogg': 'audio/ogg',
+  '.opus': 'audio/ogg',
+  '.wav': 'audio/wav',
+  '.aac': 'audio/aac',
+  '.wma': 'audio/x-ms-wma',
+  '.aiff': 'audio/aiff',
+}
+
+// Chromium 的媒体元素必发 `Range: bytes=0-`，且依赖 Content-Type 选择解码器。
+// net.fetch(file://) 两者都不给，普通 mp3/mp4 因此无法播放（fMP4 的 m4a 碰巧能播）。
+function serveLocalAudio(request: Request, filePath: string): Response {
+  let stat: fs.Stats
+  try {
+    stat = fs.statSync(filePath)
+  } catch {
+    return new Response('Not Found', { status: 404 })
+  }
+  if (!stat.isFile()) return new Response('Not Found', { status: 404 })
+
+  const mime = AUDIO_MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream'
+  const range = request.headers.get('range')
+  const match = range ? /bytes=(\d+)-(\d*)/.exec(range) : null
+
+  if (match) {
+    const start = Number(match[1])
+    const end = match[2] ? Math.min(Number(match[2]), stat.size - 1) : stat.size - 1
+    if (start > end || start >= stat.size) {
+      return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${stat.size}` } })
+    }
+    const stream = fs.createReadStream(filePath, { start, end })
+    return new Response(Readable.toWeb(stream) as ReadableStream, {
+      status: 206,
+      headers: {
+        'Content-Type': mime,
+        'Content-Length': String(end - start + 1),
+        'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+        'Accept-Ranges': 'bytes',
+      },
+    })
+  }
+
+  const stream = fs.createReadStream(filePath)
+  return new Response(Readable.toWeb(stream) as ReadableStream, {
+    status: 200,
+    headers: {
+      'Content-Type': mime,
+      'Content-Length': String(stat.size),
+      'Accept-Ranges': 'bytes',
+    },
+  })
+}
 
 // 生产环境用自定义 app:// 协议加载渲染层：file:// 下 ESM(type=module) 脚本会被
 // Chromium 的 CORS 策略拦截（file:// 为不透明源）导致页面空白。自定义标准安全协议
@@ -617,23 +679,118 @@ ipcMain.on('persistent-storage:remove', (_event, key: string) => {
 ipcMain.handle('shell:open-external', (_event, url: string) => {
   if (typeof url === 'string' && /^https?:\/\//i.test(url)) return shell.openExternal(url)
 })
+// 用文件管理器打开目录。Linux 上 shell.openPath 走 xdg-open 的 inode/directory MIME 分派，
+// 部分环境会误落到终端；直接启动文件管理器可执行文件可绕开该分派。
+function openDirectoryInFileManager(dir: string): void {
+  if (process.platform !== 'linux') {
+    void shell.openPath(dir)
+    return
+  }
+  const managers = ['nautilus', 'dolphin', 'thunar', 'nemo', 'caja', 'pcmanfm']
+  for (const cmd of managers) {
+    if (spawnSync('which', [cmd], { stdio: 'ignore' }).status === 0) {
+      const child = spawn(cmd, [dir], { detached: true, stdio: 'ignore' })
+      child.on('error', () => shell.showItemInFolder(dir))
+      child.unref()
+      return
+    }
+  }
+  // 未找到常见文件管理器时，退回 Electron 的文件管理器定位接口
+  shell.showItemInFolder(dir)
+}
+
+// 在系统文件管理器中打开下载目录：与 downloadAudio 共用目录解析，确保打开的就是实际写入位置
+ipcMain.handle('shell:open-downloads-dir', async (_event, preferred?: string) => {
+  try {
+    const dir = resolveDownloadDir(preferred)
+    fs.mkdirSync(dir, { recursive: true })
+    openDirectoryInFileManager(dir)
+    return { ok: true, message: '' }
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+// 下载目录配置：主进程持久化到 userData，渲染层启动时读回并回灌展示
+ipcMain.handle('downloads:get-dir', () => getDownloadDir())
+ipcMain.handle('downloads:set-dir', (_event, dir: string) => {
+  try {
+    return { ok: true, dir: setDownloadDir(dir) }
+  } catch (err) {
+    return { ok: false, dir: getDownloadDir(), message: err instanceof Error ? err.message : String(err) }
+  }
+})
+// 删除已下载音频：只放行音频扩展名的绝对路径，避免渲染层传入任意路径
+ipcMain.handle('downloads:delete-file', async (_event, filePath: string) => {
+  try {
+    if (typeof filePath !== 'string' || !path.isAbsolute(filePath) || !AUDIO_EXT_RE.test(filePath)) {
+      return { ok: false, message: '无效的音频文件路径' }
+    }
+    fs.rmSync(filePath, { force: true })
+    return { ok: true, message: '' }
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) }
+  }
+})
+// 扫描下载目录里已存在的音频文件（非本软件下载的也能被识别）
+ipcMain.handle('downloads:scan-dir', () => {
+  try {
+    const dir = getDownloadDir()
+    if (!fs.existsSync(dir)) return []
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter(entry => entry.isFile() && AUDIO_EXT_RE.test(entry.name))
+      .map((entry) => {
+        const filePath = path.join(dir, entry.name)
+        try {
+          return { name: entry.name, path: filePath, size: fs.statSync(filePath).size }
+        } catch {
+          return null // 文件在扫描期间被删
+        }
+      })
+      .filter(item => item !== null)
+  } catch {
+    return []
+  }
+})
+// 选择下载目录：渲染层的 window.prompt 在 Electron 中不会弹出，改由主进程调用原生目录对话框
+ipcMain.handle('dialog:select-directory', async (_event, defaultPath?: string) => {
+  try {
+    const fallback = getDownloadDir()
+    fs.mkdirSync(fallback, { recursive: true })
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: defaultPath && fs.existsSync(defaultPath) ? defaultPath : fallback,
+    })
+    return result.canceled || !result.filePaths.length ? null : result.filePaths[0]
+  } catch {
+    return null // 鸿蒙等不支持原生对话框的平台静默降级
+  }
+})
 
 app.whenReady().then(() => {
-  // 生产环境注册 app:// 协议，映射到打包后的 dist 目录（asar 内 file:// 读取透明支持）
-  if (!process.env.VITE_DEV_SERVER_URL) {
-    protocol.handle('app', async (request) => {
-      const { pathname } = new URL(request.url)
-      // 渲染层根目录可能是包内 dist 或已生效的 OTA asar（net.fetch 透明读 asar 内部）
-      const filePath = path.join(getActiveRendererRoot(), decodeURIComponent(pathname))
-      try {
-        return await net.fetch(pathToFileURL(filePath).toString())
-      } catch (err) {
-        // 关键诊断：鸿蒙上若读沙箱 asar 失败会在此命中（filePath 含 .asar）
-        console.log('[BiliMusic-OTA] app:// fetch FAILED:', filePath, '—', err instanceof Error ? err.message : String(err))
-        throw err
+  // app:// 协议：生产环境映射打包后的 dist，同时把已下载的本地音频桥接进来。
+  // 后者在 dev 模式同样需要（渲染层仍从 dev server 加载，但音频要读本地文件）。
+  protocol.handle('app', async (request) => {
+    const { pathname } = new URL(request.url)
+    // 已下载的本地音频：渲染层从下载记录传入绝对路径，仅放行音频扩展名。
+    // app:// 是标准安全源，页面无法直接加载 file://，故在此把本地文件桥接进来。
+    if (pathname.startsWith('/__download__/')) {
+      const localFile = decodeURIComponent(pathname.slice('/__download__/'.length))
+      if (!path.isAbsolute(localFile) || !AUDIO_EXT_RE.test(localFile)) {
+        return new Response('Forbidden', { status: 403 })
       }
-    })
-  }
+      return serveLocalAudio(request, localFile)
+    }
+    // 渲染层根目录可能是包内 dist 或已生效的 OTA asar（net.fetch 透明读 asar 内部）
+    const filePath = path.join(getActiveRendererRoot(), decodeURIComponent(pathname))
+    try {
+      return await net.fetch(pathToFileURL(filePath).toString())
+    } catch (err) {
+      // 关键诊断：鸿蒙上若读沙箱 asar 失败会在此命中（filePath 含 .asar）
+      console.log('[BiliMusic-OTA] app:// fetch FAILED:', filePath, '—', err instanceof Error ? err.message : String(err))
+      throw err
+    }
+  })
   setupBiliHeaders()
   registerBiliApiHandlers()
   registerLyricsApiHandlers()

@@ -14,6 +14,13 @@ export interface Track {
   likedAt?: string // 收藏时间，供云同步按 like/unlike 时间合并
 }
 
+// 已下载到本地的曲目：保留 Track 展示信息，附加物理文件信息供离线播放与管理
+export interface DownloadedTrack extends Track {
+  filePath: string
+  size: number
+  downloadedAt: string
+}
+
 export interface Playlist {
   id: string
   name: string

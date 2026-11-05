@@ -2,6 +2,8 @@ import { createContext, useContext, useState, useCallback, useMemo, useRef, useE
 import type { Track, RepeatMode } from '@/types'
 import { extractAudio } from '@/services/api'
 import { addRecentTrack, toggleFavoriteTrack, loadFavoriteTracks } from '@/utils/storage'
+import { getDownloadedTrack } from '@/utils/downloads'
+import { readStoredItem, writeStoredItem } from '@/utils/persistentStorage'
 import { useAppSettings } from '@/hooks/useAppSettings'
 
 interface PlayerState {
@@ -64,7 +66,7 @@ const PlayerProgressContext = createContext<PlayerProgress | null>(null)
 const PLAYER_STATE_KEY = 'bilimusic_player_state'
 
 function loadPersistedPlayerState(): PersistedPlayerState {
-  const fallbackVolume = localStorage.getItem('bilimusic_volume')
+  const fallbackVolume = readStoredItem('bilimusic_volume')
   const fallback: PersistedPlayerState = {
     currentTrack: null,
     queue: [],
@@ -79,7 +81,7 @@ function loadPersistedPlayerState(): PersistedPlayerState {
   }
 
   try {
-    const raw = localStorage.getItem(PLAYER_STATE_KEY)
+    const raw = readStoredItem(PLAYER_STATE_KEY)
     if (!raw) return fallback
     const parsed = JSON.parse(raw) as Partial<PersistedPlayerState>
     const queue = Array.isArray(parsed.queue) ? parsed.queue : []
@@ -200,7 +202,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audioRef.current.volume = volume / 100
       audioRef.current.muted = isMuted
     }
-    localStorage.setItem('bilimusic_volume', String(volume))
+    writeStoredItem('bilimusic_volume', String(volume))
   }, [volume, isMuted])
 
   useEffect(() => {
@@ -265,10 +267,34 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     async function loadAndPlay() {
       setLoadingAudio(true)
       try {
-        const fallback = currentTrack!.aid && currentTrack!.cid
-          ? { aid: currentTrack!.aid, cid: currentTrack!.cid }
+        const track = currentTrack!
+
+        // 已下载曲目优先播放本地文件（离线可听）；文件缺失或损坏时回退在线取流
+        const local = getDownloadedTrack(track.id)
+        if (local) {
+          try {
+            audio.src = `app://local/__download__/${encodeURIComponent(local.filePath)}`
+            audio.currentTime = progress > 0 ? progress : 0
+            if (shouldAutoplayRef.current) {
+              await audio.play()
+              if (cancelled) return
+              setIsPlaying(true)
+            } else {
+              audio.pause()
+              setIsPlaying(false)
+            }
+            setDuration(local.duration || audio.duration || 0)
+            addRecentTrack(track)
+            return
+          } catch {
+            // 本地文件不可用，继续走在线提取
+          }
+        }
+
+        const fallback = track.aid && track.cid
+          ? { aid: track.aid, cid: track.cid }
           : undefined
-        const source = await extractAudio(currentTrack!.bvid || currentTrack!.id, fallback)
+        const source = await extractAudio(track.bvid || track.id, fallback)
         if (cancelled) return
         const targetProgress = progress > 0 ? progress : 0
         audio.src = source.audioUrl
@@ -287,7 +313,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           setCurrentTrack(prev => prev ? { ...prev, coverUrl: source.coverUrl } : null)
         }
         // 记录最近播放
-        addRecentTrack({ ...currentTrack!, coverUrl: source.coverUrl || currentTrack!.coverUrl })
+        addRecentTrack({ ...track, coverUrl: source.coverUrl || track.coverUrl })
       } catch {
         if (!cancelled) {
           // 降级：直接用原始信息触发 play（无音频源，标记为不可播放）
@@ -536,7 +562,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         wasPlaying: isPlaying,
         currentIndex: currentIndexRef.current,
       }
-      localStorage.setItem(PLAYER_STATE_KEY, JSON.stringify(state))
+      writeStoredItem(PLAYER_STATE_KEY, JSON.stringify(state))
     } catch {
       // ignore persistence failures
     }

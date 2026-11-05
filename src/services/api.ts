@@ -178,9 +178,10 @@ export async function extractAudio(
 
 // ===== 下载音频 =====
 
-export async function downloadAudio(audioUrl: string, filename: string): Promise<{ filePath: string; size: number }> {
+export async function downloadAudio(audioUrl: string, filename: string, downloadDir?: string): Promise<{ filePath: string; size: number }> {
   if (isElectron()) {
-    return window.electronAPI.biliApi.downloadAudio(audioUrl, filename)
+    // 不传目录时由主进程用持久化配置（download-dir.json）决定，与扫描/打开目录同源
+    return window.electronAPI.biliApi.downloadAudio(audioUrl, filename, downloadDir)
   }
 
   throw new Error('Audio download requires Electron environment')

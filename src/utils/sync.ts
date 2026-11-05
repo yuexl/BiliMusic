@@ -9,6 +9,7 @@ import {
   savePlaylistTombstones,
   savePlaylists,
 } from './storage'
+import { readStoredItem, writeStoredItem } from './persistentStorage'
 
 const SYNC_FILE = 'sync.json'
 const DEVICE_ID_KEY = 'bilimusic_device_id'
@@ -36,19 +37,19 @@ export interface SyncResult {
 }
 
 function getDeviceId(): string {
-  let id = localStorage.getItem(DEVICE_ID_KEY)
+  let id = readStoredItem(DEVICE_ID_KEY)
   if (!id) {
     id = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `dev_${Date.now()}`
-    localStorage.setItem(DEVICE_ID_KEY, id)
+    writeStoredItem(DEVICE_ID_KEY, id)
   }
   return id
 }
 
 export function getLastSync(): string {
-  return localStorage.getItem(LAST_SYNC_KEY) || ''
+  return readStoredItem(LAST_SYNC_KEY) || ''
 }
 function setLastSync(at: string): void {
-  localStorage.setItem(LAST_SYNC_KEY, at)
+  writeStoredItem(LAST_SYNC_KEY, at)
   window.dispatchEvent(new CustomEvent(SYNC_STATE_EVENT))
 }
 

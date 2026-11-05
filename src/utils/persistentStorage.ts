@@ -1,9 +1,8 @@
-const HARMONY_PLATFORM = 'openharmony'
-
+// 主进程持久化为所有本地状态的权威来源（userData/renderer-persistent-store.json），
+// localStorage 只作快速镜像。Electron 的 localStorage 可能被清理或换源导致设置/资料库丢失，
+// 因此所有平台都走 IPC，而不是仅限鸿蒙。
 function getPersistentApi() {
-  const api = window.electronAPI
-  if (api?.platform !== HARMONY_PLATFORM) return null
-  return api.persistentStorage
+  return window.electronAPI?.persistentStorage ?? null
 }
 
 export function readStoredItem(key: string): string | null {
@@ -12,15 +11,16 @@ export function readStoredItem(key: string): string | null {
     const value = persistent.getItem(key)
     if (value !== null) {
       try {
-        localStorage.setItem(key, value)
+        localStorage.setItem(key, value) // 回灌镜像
       } catch {
-        // LocalStorage may be unavailable or transient on HarmonyOS.
+        // localStorage 不可用时忽略，主进程存储仍是权威来源
       }
       return value
     }
   }
 
   try {
+    // 主进程尚无此 key（首次启动或老版本升级）：把 localStorage 里的旧值迁移过去
     const value = localStorage.getItem(key)
     if (value !== null) {
       persistent?.setItem(key, value)
@@ -35,7 +35,7 @@ export function writeStoredItem(key: string, value: string): void {
   try {
     localStorage.setItem(key, value)
   } catch {
-    // Keep the persistent copy as the source of truth when localStorage fails.
+    // localStorage 写入失败时，主进程副本仍是权威来源
   }
   getPersistentApi()?.setItem(key, value)
 }

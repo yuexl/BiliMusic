@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react'
 import { getLoginStatus, getUserInfo, logout as apiLogout } from '@/services/api'
+import { readStoredItem, writeStoredItem, removeStoredItem } from '@/utils/persistentStorage'
 
 const STORAGE_KEY = 'bilimusic_user'
 
@@ -23,7 +24,7 @@ const AuthContext = createContext<AuthContext | null>(null)
 
 function loadCachedUser() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = readStoredItem(STORAGE_KEY)
     if (raw) return JSON.parse(raw) as { username: string; avatar: string }
   } catch { /* ignore */ }
   return null
@@ -31,13 +32,13 @@ function loadCachedUser() {
 
 function saveCachedUser(username: string, avatar: string) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ username, avatar }))
+    writeStoredItem(STORAGE_KEY, JSON.stringify({ username, avatar }))
   } catch { /* ignore */ }
 }
 
 function clearCachedUser() {
   try {
-    localStorage.removeItem(STORAGE_KEY)
+    removeStoredItem(STORAGE_KEY)
   } catch { /* ignore */ }
 }
 

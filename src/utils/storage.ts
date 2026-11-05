@@ -15,7 +15,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   sidebarState: 'auto',
   playQuality: '高品质',
   downloadQuality: '高品质',
-  downloadDir: 'D:\\Music\\biliMusic',
+  downloadDir: '',
   autoPlay: true,
   showLyrics: true,
 }
@@ -26,14 +26,14 @@ function notifySettingsChanged() {
 
 export function loadRecentTracks(): Track[] {
   try {
-    const raw = localStorage.getItem(RECENT_KEY)
+    const raw = readStoredItem(RECENT_KEY)
     return raw ? JSON.parse(raw) : []
   } catch { return [] }
 }
 
 export function saveRecentTracks(tracks: Track[]) {
   try {
-    localStorage.setItem(RECENT_KEY, JSON.stringify(tracks.slice(0, 50)))
+    writeStoredItem(RECENT_KEY, JSON.stringify(tracks.slice(0, 50)))
   } catch { /* ignore */ }
 }
 
@@ -45,14 +45,14 @@ export function addRecentTrack(track: Track) {
 
 export function loadFavoriteTracks(): Track[] {
   try {
-    const raw = localStorage.getItem(FAVORITES_KEY)
+    const raw = readStoredItem(FAVORITES_KEY)
     return raw ? JSON.parse(raw) : []
   } catch { return [] }
 }
 
 export function saveFavoriteTracks(tracks: Track[]) {
   try {
-    localStorage.setItem(FAVORITES_KEY, JSON.stringify(tracks))
+    writeStoredItem(FAVORITES_KEY, JSON.stringify(tracks))
     window.dispatchEvent(new CustomEvent(FAVORITES_CHANGED_EVENT))
   } catch { /* ignore */ }
 }
@@ -93,7 +93,7 @@ function createId(): string {
 // ===== 删除墓碑（云同步用）=====
 function loadTombstones(key: string): Tombstone[] {
   try {
-    const raw = localStorage.getItem(key)
+    const raw = readStoredItem(key)
     return raw ? JSON.parse(raw) : []
   } catch {
     return []
@@ -101,7 +101,7 @@ function loadTombstones(key: string): Tombstone[] {
 }
 function saveTombstones(key: string, list: Tombstone[]): void {
   try {
-    localStorage.setItem(key, JSON.stringify(list))
+    writeStoredItem(key, JSON.stringify(list))
   } catch {
     /* ignore */
   }
@@ -129,7 +129,7 @@ export function saveFavoriteTombstones(list: Tombstone[]): void {
 
 export function loadPlaylists(): Playlist[] {
   try {
-    const raw = localStorage.getItem(PLAYLISTS_KEY)
+    const raw = readStoredItem(PLAYLISTS_KEY)
     return raw ? JSON.parse(raw) : []
   } catch {
     return []
@@ -138,7 +138,7 @@ export function loadPlaylists(): Playlist[] {
 
 export function savePlaylists(playlists: Playlist[]) {
   try {
-    localStorage.setItem(PLAYLISTS_KEY, JSON.stringify(playlists))
+    writeStoredItem(PLAYLISTS_KEY, JSON.stringify(playlists))
     notifyPlaylistsChanged()
   } catch {
     // ignore

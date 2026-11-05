@@ -1,12 +1,52 @@
 import { ipcMain, net, app, session } from 'electron'
 import path from 'path'
 import fs from 'fs/promises'
+import fsSync from 'fs'
 
 const BILI_API = 'https://api.bilibili.com'
 const BILI_PASSPORT = 'https://passport.bilibili.com'
 const BILI_REFERER = 'https://www.bilibili.com'
 
 // ===== IPC Handlers =====
+
+// 下载目录由主进程持久化到 userData，避免仅依赖渲染层 localStorage（重启/换源可能丢失）。
+// 设置页与打开目录、下载写入都以此处为权威来源。
+function downloadDirConfigFile(): string {
+  return path.join(app.getPath('userData'), 'download-dir.json')
+}
+
+export function getDownloadDir(): string {
+  try {
+    const raw = JSON.parse(fsSync.readFileSync(downloadDirConfigFile(), 'utf8')) as { downloadDir?: unknown }
+    if (typeof raw.downloadDir === 'string' && path.isAbsolute(raw.downloadDir)) return raw.downloadDir
+  } catch {
+    // 首次运行或配置损坏，回退到默认目录
+  }
+  return path.join(app.getPath('userData'), 'downloads')
+}
+
+// 传空值表示恢复默认；返回最终生效的目录
+export function setDownloadDir(dir: string): string {
+  const normalized = String(dir || '').trim()
+  if (!normalized || !path.isAbsolute(normalized)) {
+    try {
+      fsSync.rmSync(downloadDirConfigFile(), { force: true })
+    } catch {
+      // ignore
+    }
+  } else {
+    fsSync.mkdirSync(normalized, { recursive: true })
+    fsSync.writeFileSync(downloadDirConfigFile(), JSON.stringify({ downloadDir: normalized }, null, 2))
+  }
+  return getDownloadDir()
+}
+
+// 统一解析实际下载目录：显式传入的绝对路径优先，否则用主进程持久化的配置。
+// 下载写入与「打开目录」共用此函数，保证两者始终指向同一目录。
+export function resolveDownloadDir(preferred?: string): string {
+  if (preferred && path.isAbsolute(preferred)) return preferred
+  return getDownloadDir()
+}
 
 export function registerBiliApiHandlers() {
   // 搜索视频
@@ -50,10 +90,10 @@ export function registerBiliApiHandlers() {
   })
 
   // 下载音频文件到本地
-  ipcMain.handle('bili:downloadAudio', async (_event, audioUrl: string, filename: string) => {
-    const downloadDir = path.join(app.getPath('userData'), 'downloads')
-    await fs.mkdir(downloadDir, { recursive: true })
-    const filePath = path.join(downloadDir, filename)
+  ipcMain.handle('bili:downloadAudio', async (_event, audioUrl: string, filename: string, downloadDir?: string) => {
+    const dir = resolveDownloadDir(downloadDir)
+    await fs.mkdir(dir, { recursive: true })
+    const filePath = path.join(dir, path.basename(filename) || 'audio.m4a')
 
     const response = await net.fetch(audioUrl, {
       headers: { Referer: BILI_REFERER },

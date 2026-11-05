@@ -20,7 +20,7 @@ interface BiliApi {
     audioMimeType: string
     bandwidth: number
   }>
-  downloadAudio: (audioUrl: string, filename: string) => Promise<{
+  downloadAudio: (audioUrl: string, filename: string, downloadDir?: string) => Promise<{
     filePath: string
     size: number
   }>
@@ -130,6 +130,12 @@ declare global {
       updateTrayPlayerState?: (state: TrayPlayerState) => void
       onTrayPlayerCommand?: (callback: (command: TrayPlayerCommand) => void) => () => void
       openExternal: (url: string) => Promise<void>
+      selectDirectory?: (defaultPath?: string) => Promise<string | null>
+      openDownloadDir?: (downloadDir?: string) => Promise<{ ok: boolean; message: string }>
+      deleteDownloadedFile?: (filePath: string) => Promise<{ ok: boolean; message: string }>
+      scanDownloadDir?: () => Promise<Array<{ name: string; path: string; size: number }>>
+      getDownloadDir?: () => Promise<string>
+      setDownloadDir?: (dir: string) => Promise<{ ok: boolean; dir: string; message?: string }>
       getAppVersion?: () => Promise<string>
       checkForUpdate?: () => Promise<void>
       quitAndInstall?: () => void

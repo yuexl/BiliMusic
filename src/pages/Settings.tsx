@@ -37,10 +37,15 @@ export default function Settings() {
   const [appVersion, setAppVersion] = useState('1.0.0')
   const [updateStatus, setUpdateStatus] = useState('')
   const [updateAction, setUpdateAction] = useState<'restart' | 'reload' | null>(null)
+  const [downloadDirError, setDownloadDirError] = useState('')
 
   useEffect(() => {
     window.electronAPI?.getAppVersion?.()?.then((v) => {
       if (v) setAppVersion(v)
+    })
+    // 下载目录另有主进程权威配置（download-dir.json）：启动时同步进 AppSettings，保持两处一致
+    void window.electronAPI?.getDownloadDir?.().then((dir) => {
+      if (dir) setAppSettings({ downloadDir: dir })
     })
     return window.electronAPI?.onUpdaterEvent?.((event) => {
       switch (event.type) {
@@ -133,9 +138,14 @@ export default function Settings() {
     setSyncBusy(false)
   }
 
-  const changeDownloadDir = () => {
-    const next = window.prompt('请输入下载目录', settings.downloadDir)
-    if (next?.trim()) setAppSettings({ downloadDir: next.trim() })
+  const changeDownloadDir = async () => {
+    setDownloadDirError('')
+    const selected = await window.electronAPI?.selectDirectory?.(settings.downloadDir || undefined)
+    if (!selected) return
+    // 双写：下载专用配置（download-dir.json，供主进程下载逻辑）+ AppSettings（设置页展示）
+    const result = await window.electronAPI?.setDownloadDir?.(selected)
+    if (result && !result.ok) setDownloadDirError(result.message || '保存下载目录失败')
+    setAppSettings({ downloadDir: result?.dir || selected })
   }
 
   const exportPlaylists = () => {
@@ -290,9 +300,9 @@ export default function Settings() {
 
         <div className="settings-column">
           <SettingsGroup title="下载" icon={<Download size={20} />}>
-            <SettingsRow label="下载目录">
+            <SettingsRow label="下载目录" description={downloadDirError || undefined}>
               <div className="settings-path">
-                <span>{settings.downloadDir}</span>
+                <span>{settings.downloadDir || '未设置'}</span>
                 <button type="button" onClick={changeDownloadDir}>
                   <FolderOpen size={14} />
                   更改
