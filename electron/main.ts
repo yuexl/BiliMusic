@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Tray, ipcMain, nativeImage, net, protocol, screen, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, Menu, Tray, ipcMain, nativeImage, net, protocol, screen, session, shell, type MenuItemConstructorOptions } from 'electron'
 import { spawn, spawnSync } from 'child_process'
 import { Readable } from 'stream'
 import fs from 'fs'
@@ -220,10 +220,35 @@ function showMainWindow() {
   mainWindow?.focus()
 }
 
+// Linux 托盘走 StatusNotifierItem/AppIndicator：right-click/double-click 事件不发出，
+// 自定义透明弹窗在 GNOME/Wayland 下也无法可靠定位。改用原生菜单，点击图标即可弹出。
+function buildTrayContextMenu() {
+  const { hasTrack, isPlaying, title, artist, queueLength } = trayPlayerState
+  const items: MenuItemConstructorOptions[] = [
+    { label: hasTrack ? title : '未在播放', enabled: false },
+  ]
+  if (hasTrack) items.push({ label: artist, enabled: false })
+  items.push(
+    { type: 'separator' },
+    { label: '显示 BiliMusic', click: showMainWindow },
+    { type: 'separator' },
+    { label: '上一首', enabled: hasTrack, click: () => sendTrayCommand('prev') },
+    { label: isPlaying ? '暂停' : '播放', enabled: hasTrack, click: () => sendTrayCommand('toggle-play') },
+    { label: '下一首', enabled: hasTrack, click: () => sendTrayCommand('next') },
+    { type: 'separator' },
+    { label: `播放队列：${queueLength} 首`, enabled: false },
+    { type: 'separator' },
+    { label: '退出应用', click: quitApp },
+  )
+  return Menu.buildFromTemplate(items)
+}
+
 function updateTrayState() {
   tray?.setToolTip(trayPlayerState.hasTrack
     ? `${trayPlayerState.isPlaying ? '正在播放' : '已暂停'}: ${trayPlayerState.title}`
     : 'BiliMusic')
+  // Linux 上 MenuItem 的改动必须重新 setContextMenu 才会生效
+  if (process.platform === 'linux' && tray) tray.setContextMenu(buildTrayContextMenu())
   trayWindow?.webContents.send('tray:state', trayPlayerState)
 }
 
@@ -526,6 +551,11 @@ function createTray() {
   if (tray) return
   tray = new Tray(createTrayIcon())
   tray.setToolTip('BiliMusic')
+  if (process.platform === 'linux') {
+    // 不再绑定 click/right-click：原生菜单已接管点击，再绑会把主窗口也叫出来
+    tray.setContextMenu(buildTrayContextMenu())
+    return
+  }
   tray.on('click', showMainWindow)
   tray.on('double-click', showMainWindow)
   if (!isHarmonyOS) {
@@ -539,6 +569,13 @@ function hideToTray() {
   if (process.platform === 'darwin') app.dock?.hide()
 }
 
+function quitApp() {
+  isQuitting = true
+  trayWindow?.close()
+  mainWindow?.destroy()
+  app.quit()
+}
+
 function sendTrayCommand(command: TrayCommand) {
   if (command === 'show-window') {
     showMainWindow()
@@ -546,10 +583,7 @@ function sendTrayCommand(command: TrayCommand) {
     return
   }
   if (command === 'quit') {
-    isQuitting = true
-    trayWindow?.close()
-    mainWindow?.destroy()
-    app.quit()
+    quitApp()
     return
   }
   mainWindow?.webContents.send('tray:player-command', command)
@@ -811,6 +845,12 @@ app.whenReady().then(() => {
     createWindow()
     createTray()
   }
+})
+
+// 任何退出路径（托盘菜单、系统菜单、Ctrl+Q、更新重启）都先放行主窗口关闭，
+// 否则 close 事件里的 preventDefault 会把退出拦回托盘。
+app.on('before-quit', () => {
+  isQuitting = true
 })
 
 app.on('window-all-closed', () => {
