@@ -95,7 +95,7 @@
         "AppImage",
         "deb"
       ],
-      "icon": "electron/icon.png",
+      "icon": "build/icons",
       "category": "AudioVideo",
       "maintainer": "Hanversion <hanversion@gmail.com>",
       "synopsis": "基于 Bilibili 的桌面音乐播放器",
